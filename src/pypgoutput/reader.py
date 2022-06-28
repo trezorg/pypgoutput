@@ -156,20 +156,21 @@ class LogicalReplicationReader:
 
     def read_raw_extracted(self) -> typing.Generator[ReplicationMessage, None, None]:
         """yields ReplicationMessages from the pipe as written by extractor process"""
-        empty_count = 0
-        iter_count = 0
         msg_count = 0
         while True:
-            if not self.pipe_out_conn.poll(timeout=0.5):
-                empty_count += 1
-            else:
-                item = self.pipe_out_conn.recv()
-                msg_count += 1
-                yield item
-                self.pipe_out_conn.send({"id": item.message_id})
-            if iter_count % 50 == 0:
-                logger.debug(f"pipe poll count: {iter_count}, messages processed: {msg_count}")
-            iter_count += 1
+            try:
+                if not self.extractor.is_alive():
+                    break
+                if self.pipe_out_conn.poll(timeout=0.5):
+                    item = self.pipe_out_conn.recv()
+                    msg_count += 1
+                    yield item
+                    self.pipe_out_conn.send({"id": item.message_id})
+                if msg_count % 50 == 0:
+                    logger.debug("messages processed: %d", msg_count)
+            except EOFError as exc:
+                logger.error("pipe closed: %s", exc)
+                break
 
     def transform_raw(
         self, message_stream: typing.Generator[ReplicationMessage, None, None]
@@ -342,21 +343,25 @@ class ExtractRaw(Process):
     """
 
     def __init__(self, dsn: str, publication_name: str, slot_name: str, pipe_conn: Connection) -> None:
-        Process.__init__(self)
+        super().__init__()
         self.dsn = dsn
         self.publication_name = publication_name
         self.slot_name = slot_name
         self.pipe_conn = pipe_conn
 
     def connect(self) -> None:
+        """Open connections"""
         self.conn = psycopg2.extras.LogicalReplicationConnection(self.dsn)
         self.cur = psycopg2.extras.ReplicationCursor(self.conn)
 
     def close(self) -> None:
+        """Close connections"""
         self.cur.close()
         self.conn.close()
+        self.pipe_conn.close()
 
     def run(self) -> None:
+        """Run. Process or Thread method"""
         replication_options = {"publication_names": self.publication_name, "proto_version": "1"}
         try:
             self.cur.start_replication(slot_name=self.slot_name, decode=False, options=replication_options)
@@ -364,14 +369,17 @@ class ExtractRaw(Process):
             self.cur.create_replication_slot(self.slot_name, output_plugin="pgoutput")
             self.cur.start_replication(slot_name=self.slot_name, decode=False, options=replication_options)
         try:
-            logger.info(f"Starting replication from slot: '{self.slot_name}'")
+            logger.info("Starting replication from slot: %s", self.slot_name)
             self.cur.consume_stream(self.msg_consumer)
-        except Exception as err:
-            logger.error(f"Error consuming stream from slot: '{self.slot_name}'. {err}")
-            self.cur.close()
-            self.conn.close()
+        except Exception as err:  # pylint: disable=broad-except
+            logger.error("Error consuming stream from slot: %s. %s", self.slot_name, err)
+            self.close()
 
     def msg_consumer(self, msg: psycopg2.extras.ReplicationMessage) -> None:
+        """Stream callback
+        Args:
+            msg (psycopg2.extras.ReplicationMessage): logical replication message
+        """
         message_id = uuid.uuid4()
         message = ReplicationMessage(
             message_id=message_id,
@@ -385,6 +393,6 @@ class ExtractRaw(Process):
         result = self.pipe_conn.recv()  # how would this wait until processing is done?
         if result["id"] == message_id:
             msg.cursor.send_feedback(flush_lsn=msg.data_start)
-            logger.debug(f"Flushed message: '{str(message_id)}'")
+            logger.debug("Flushed message: %s", str(message_id))
         else:
-            logger.warning(f"Could not confirm message: {str(message_id)}. Did not flush at {str(msg.data_start)}")
+            logger.warning("Could not confirm message: %s. Did not flush at %s", str(message_id), str(msg.data_start))
