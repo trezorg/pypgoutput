@@ -225,7 +225,8 @@ class LogicalReplicationReader:
         )
 
         # key only schema definition
-        # this is for REPLICA IDENTITY DEFAULT setting where only the old PK values are replicated for Update and Deletes
+        # this is for REPLICA IDENTITY DEFAULT setting where only the old PK values are
+        # replicated for Update and Deletes
         # https://www.postgresql.org/docs/12/sql-altertable.html#SQL-CREATETABLE-REPLICA-IDENTITY
         key_only_schema_mapping_args: typing.Dict[str, typing.Any] = {
             c.name: (convert_pg_type_to_py_type(c.type_name), None if c.optional else ...)

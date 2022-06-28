@@ -1,0 +1,22 @@
+stages:
+  - deploy
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+before_script:
+  - python3 -m pip install poetry --user -q
+  - export PATH=${PATH}:${HOME}/.local/bin
+  - poetry config --local repositories.echo "${POETRY_REPOSITORY}"
+
+.deployment_script: &deployment_script |
+  make publish
+
+deploy_prod:
+  stage: deploy
+  script:
+    - *deployment_script
+  only:
+    - main
+  environment:
+    name: prod

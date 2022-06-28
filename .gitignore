@@ -9,3 +9,4 @@ test/output.txt
 .coverage
 dist/
 /.vscode
+/.python-version
